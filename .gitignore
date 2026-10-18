@@ -7,4 +7,5 @@ coverage/
 *.sqlite
 *.sqlite3
 *.db
+data/*.sqlite*
 npm-debug.log*

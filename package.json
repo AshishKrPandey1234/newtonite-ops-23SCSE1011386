@@ -1,15 +1,16 @@
 {
   "name": "newtonite-ops",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A lightweight operations workflow application",
   "type": "module",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "node --watch server/index.js",
-    "check": "node --check server/index.js"
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "dev": "node --watch --env-file-if-exists=.env server/index.js",
+    "check": "node --check server/index.js && node --check server/db.js && node --check server/security.js",
+    "test": "node --test"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   }
 }
