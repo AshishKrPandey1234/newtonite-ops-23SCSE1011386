@@ -1,6 +1,6 @@
 # Newtonite Ops
 
-Newtonite Ops is an operations workflow application for tracking work items through a small, explicit lifecycle. The current milestone includes a Node.js REST API, SQLite persistence, cookie-based login sessions, role-aware work item updates, and optimistic concurrency checks. A React dashboard is the next milestone.
+Newtonite Ops is an operations workflow application for tracking work items through a small, explicit lifecycle. It includes a Node.js REST API, SQLite persistence, cookie-based sessions, role-based access, transactional idempotent item creation, optimistic concurrency checks, and a React dashboard.
 
 ## Project checklist
 
@@ -8,8 +8,10 @@ Newtonite Ops is an operations workflow application for tracking work items thro
 - [x] SQLite users, sessions, and work item schema
 - [x] Login/logout and authenticated work item API
 - [x] Work item status transitions and version conflict checks
-- [x] React operations dashboard with sign-in, search/filter, create, and status updates
-- [x] Automated API workflow and concurrency test
+- [x] Admin member provisioning and work assignment
+- [x] Transactional idempotent work item creation
+- [x] React dashboard with sign-in, team management, search/filter, and status updates
+- [x] Automated API workflow, authorization, and concurrency test
 
 ## Technology and structure
 
@@ -44,6 +46,7 @@ flowchart LR
   Vite -->|/api proxy| API[Node.js HTTP server]
   API --> Auth[Session and role checks]
   Auth --> DB[(SQLite database)]
+  API -->|transaction: item + replay response| DB
   API -->|JSON responses| Vite
 ```
 
@@ -52,7 +55,7 @@ flowchart LR
 Install Node.js 24 or newer. In PowerShell, from the repository root:
 
 ```powershell
-npm install
+npm ci
 Copy-Item .env.example .env
 $env:SEED_ADMIN_PASSWORD = Read-Host 'Set a unique local admin password'
 npm start
@@ -98,11 +101,15 @@ Other paths currently return HTTP 404 with `{"error":"Not found"}`.
 | `POST` | `/api/auth/login` | Public | Verify email/password; sets an HttpOnly, SameSite session cookie |
 | `GET` | `/api/auth/me` | Session | Return the signed-in user's public profile |
 | `POST` | `/api/auth/logout` | Public | Revoke the presented session and clear its cookie |
+| `GET` | `/api/users` | Admin | List team members and admins |
+| `POST` | `/api/users` | Admin | Create a member using `displayName`, `email`, and a password of at least 12 characters |
 | `GET` | `/api/work-items` | Session | List up to 200 items; optional `status` and `search` filters |
-| `POST` | `/api/work-items` | Session | Create an item with a title, optional description/priority and optional assignee |
+| `POST` | `/api/work-items` | Session | Create an item with a title, optional description/priority/assignee, and an `Idempotency-Key` header |
 | `PATCH` | `/api/work-items/:id` | Session | Update fields; requires the current integer `version` in the JSON body |
 
-The seeded admin can update any item and assign it to an existing user. A member can update items they created or are assigned to. Status values are `open`, `in_progress`, `blocked`, and `done`; priorities are `low`, `medium`, and `high`. Updates that use an old version return HTTP 409, as do disallowed transitions. Passwords are stored as salted scrypt hashes, and only SHA-256 digests of opaque session tokens are stored.
+The seeded admin can add members, update any item, and assign items to existing members. A member can update items they created or are assigned to. Status values are `open`, `in_progress`, `blocked`, and `done`; priorities are `low`, `medium`, and `high`. Updates that use an old version return HTTP 409, as do disallowed transitions. Passwords are stored as salted scrypt hashes, and only SHA-256 digests of opaque session tokens are stored.
+
+The item create route requires a unique idempotency key (8–128 letters, digits, or `._~-`). Within one SQLite transaction, the server saves the item and the response associated with that key. A retry with the same key and body replays the original response; reusing the key with a different body returns HTTP 409. Old keys are pruned after 30 days during later create requests.
 
 ## Workflow and database diagrams
 
@@ -125,6 +132,7 @@ erDiagram
   USERS ||--o{ SESSIONS : owns
   USERS ||--o{ WORK_ITEMS : creates
   USERS o|--o{ WORK_ITEMS : assigned_to
+  USERS ||--o{ IDEMPOTENCY_KEYS : owns
   USERS {
     text id PK
     text email UK
@@ -148,11 +156,19 @@ erDiagram
     text assignee_id FK
     integer version
   }
+  IDEMPOTENCY_KEYS {
+    text user_id PK
+    text key_hash PK
+    text request_hash
+    integer response_status
+    text response_json
+    text created_at
+  }
 ```
 
 ## Database and demo accounts
 
-For local demo use, set a unique `SEED_ADMIN_PASSWORD` in `.env` (at least 12 characters). The app creates `admin@newtonite.local` on first startup unless you change `SEED_ADMIN_EMAIL`. There is no shared demo password and no member creation screen yet. Users can be provisioned by inserting a properly hashed user through a future admin feature; do not place passwords in source control.
+For local demo use, set a unique `SEED_ADMIN_PASSWORD` in `.env` (at least 12 characters). The app creates `admin@newtonite.local` on first startup unless you change `SEED_ADMIN_EMAIL`. There is no shared demo password. Admins can provision members from the dashboard; the API stores their salted scrypt hashes and never returns the password. Do not place passwords in source control.
 
 ## Checks
 
@@ -161,13 +177,13 @@ npm run check
 npm test
 ```
 
-Verified for this milestone: `npm run check` passes and `npm test` passes (1 integration test covering health, login/logout, authorization, work item creation/filtering, valid and invalid transitions, and stale-version rejection). The test opens a temporary in-memory SQLite database and an ephemeral localhost HTTP server.
+Verified for this milestone: `npm run check` passes, `npm test` passes (1 integration test covering health, login/logout, admin/member access, member creation, idempotent replay and mismatch, work item filtering, valid and invalid transitions, and stale-version rejection), and `npm run build` succeeds. The test uses a temporary in-memory SQLite database and an ephemeral localhost HTTP server.
 
 `npm run build` also succeeds and creates the production frontend files under `dist/`. The current Node server serves API routes only; production deployment must serve `dist/` through a static host or reverse proxy and route `/api` to the Node API.
 
 ## Known limitations and next steps
 
-- There is no member provisioning flow, request logging, or pagination beyond a 200-item cap.
+- There is no request logging, rate limiting, or pagination beyond a 200-item cap.
 - The built-in SQLite API is experimental in Node 24; for larger deployments, use a supported database service and migration tooling.
-- Session cleanup is not scheduled; expired sessions are rejected when used but retained until logout or database maintenance.
-- Next: add a member provisioning flow, session cleanup, and request logging before considering a shared production database.
+- Expired sessions remain until logout or manual database maintenance. Idempotency keys older than 30 days are pruned when later work items are created; neither cleanup has a scheduled maintenance task.
+- Next: add request logging, rate limiting, and operational monitoring before considering a shared production database.

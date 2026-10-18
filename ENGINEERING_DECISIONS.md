@@ -42,3 +42,17 @@ This log records decisions that are reflected in the current implementation.
 - **Alternatives considered:** Build server-rendered HTML in the Node process or use a larger full-stack framework.
 - **Reason:** A separate browser interface keeps the API usable independently and gives the dashboard a fast local feedback loop. The same-origin dev proxy lets the HttpOnly session cookie work without exposing it to JavaScript.
 - **Trade-off:** Local development uses two processes, and a production host must serve the static `dist/` directory while forwarding `/api` to the Node service.
+
+## 2026-10-19 — Make item creation transactional and retry-safe
+
+- **Decision:** Require an `Idempotency-Key` on work item creation. In one `BEGIN IMMEDIATE` transaction, create the item and save the response under a user-scoped SHA-256 key digest.
+- **Alternatives considered:** Let clients blindly retry or make the work item id itself the client-provided key.
+- **Reason:** A retry with the same key and body can return the original result without duplicating the item. Reusing a key for different content returns a conflict.
+- **Trade-off:** Idempotency records need cleanup, and this implementation retains them for up to 30 days after later create traffic. The transaction uses SQLite's synchronous API and is intended for this small single-process application.
+
+## 2026-10-19 — Let admins provision member accounts
+
+- **Decision:** Restrict member listing and creation to admins. New accounts are always `member`, passwords must be at least 12 characters, and only salted scrypt hashes are stored.
+- **Alternatives considered:** Add public self-registration or allow the user endpoint to create additional admins.
+- **Reason:** The app needs assignable teammates while keeping privileged roles under admin control.
+- **Trade-off:** There is no password reset, invitation email, or role editing flow; admins share temporary passwords with new members out of band.

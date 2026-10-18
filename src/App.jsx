@@ -27,6 +27,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [items, setItems] = useState([]);
+  const [users, setUsers] = useState([]);
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [login, setLogin] = useState({ email: 'admin@newtonite.local', password: '' });
@@ -36,6 +37,8 @@ function App() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState('medium');
+  const [assigneeId, setAssigneeId] = useState('');
+  const [memberDraft, setMemberDraft] = useState({ displayName: '', email: '', password: '' });
   const [loadError, setLoadError] = useState('');
 
   const query = useMemo(() => {
@@ -66,6 +69,12 @@ function App() {
     if (user) loadItems();
   }, [user, loadItems]);
 
+  useEffect(() => {
+    if (user?.role === 'admin') {
+      api('/api/users').then(({ users: team }) => setUsers(team)).catch((error) => setNotice(error.message));
+    }
+  }, [user]);
+
   async function handleLogin(event) {
     event.preventDefault();
     setBusy(true);
@@ -94,13 +103,31 @@ function App() {
     try {
       await api('/api/work-items', {
         method: 'POST',
-        body: JSON.stringify({ title, description, priority }),
+        headers: { 'idempotency-key': crypto.randomUUID() },
+        body: JSON.stringify({ title, description, priority, assigneeId: assigneeId || null }),
       });
       setTitle('');
       setDescription('');
       setPriority('medium');
+      setAssigneeId('');
       setNotice('Work item added.');
       await loadItems();
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCreateMember(event) {
+    event.preventDefault();
+    setBusy(true);
+    setNotice('');
+    try {
+      const result = await api('/api/users', { method: 'POST', body: JSON.stringify(memberDraft) });
+      setUsers((current) => [...current, result.user].sort((a, b) => a.displayName.localeCompare(b.displayName)));
+      setMemberDraft({ displayName: '', email: '', password: '' });
+      setNotice(`${result.user.displayName} was added to the team.`);
     } catch (error) {
       setNotice(error.message);
     } finally {
@@ -194,10 +221,24 @@ function App() {
             <form className="create-form" onSubmit={handleCreate}>
               <div className="field title-field"><label htmlFor="item-title">Title <span>*</span></label><input id="item-title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="e.g. Review weekly inventory report" required /></div>
               <div className="field priority-field"><label htmlFor="item-priority">Priority</label><select id="item-priority" value={priority} onChange={(event) => setPriority(event.target.value)}>{priorities.map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}</select></div>
+              {user.role === 'admin' && <div className="field assignee-field"><label htmlFor="item-assignee">Assignee <span className="optional">Optional</span></label><select id="item-assignee" value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}><option value="">Unassigned</option>{users.filter((candidate) => candidate.role === 'member').map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.displayName}</option>)}</select></div>}
               <div className="field description-field"><label htmlFor="item-description">Details <span className="optional">Optional</span></label><textarea id="item-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={5000} rows={2} placeholder="Add context, a handoff, or a useful link…" /></div>
               <div className="submit-row"><span>New items start in <strong>Open</strong>.</span><button className="primary-button" disabled={busy || !title.trim()}><span>＋</span> {busy ? 'Adding…' : 'Add item'}</button></div>
             </form>
           </section>
+
+          {user.role === 'admin' && <details className="team-panel">
+            <summary><span><strong>Manage team</strong><small>{users.filter((candidate) => candidate.role === 'member').length} members · Add or create a teammate account</small></span><span className="team-chevron">⌄</span></summary>
+            <div className="team-content">
+              <form className="member-form" onSubmit={handleCreateMember}>
+                <div className="field"><label htmlFor="member-name">Name</label><input id="member-name" value={memberDraft.displayName} onChange={(event) => setMemberDraft({ ...memberDraft, displayName: event.target.value })} maxLength={80} required /></div>
+                <div className="field"><label htmlFor="member-email">Email</label><input id="member-email" type="email" value={memberDraft.email} onChange={(event) => setMemberDraft({ ...memberDraft, email: event.target.value })} required /></div>
+                <div className="field"><label htmlFor="member-password">Temporary password</label><input id="member-password" type="password" minLength={12} autoComplete="new-password" value={memberDraft.password} onChange={(event) => setMemberDraft({ ...memberDraft, password: event.target.value })} required /></div>
+                <button className="primary-button" disabled={busy || !memberDraft.password}>Add member</button>
+              </form>
+              <ul className="member-list">{users.filter((candidate) => candidate.role === 'member').map((member) => <li key={member.id}><span className="avatar">{member.displayName.slice(0, 1).toUpperCase()}</span><span><strong>{member.displayName}</strong><small>{member.email}</small></span><span className="member-role">Member</span></li>)}</ul>
+            </div>
+          </details>}
 
           <section className="items-panel" aria-labelledby="items-heading">
             <div className="items-header"><div><h2 id="items-heading">Team queue <span className="total-pill">{items.length}</span></h2><p>Keep owners aligned and update status as work moves.</p></div><div className="item-controls"><label className="search-box"><span aria-hidden="true">⌕</span><input aria-label="Search work items" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search items" /></label><label className="filter-select"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All statuses</option>{statuses.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></label></div></div>
@@ -230,7 +271,7 @@ function WorkItemRow({ item, user, onStatusChange }) {
   const canEdit = user.role === 'admin' || item.createdBy === user.id || item.assigneeId === user.id;
   return (
     <tr>
-      <td><div className="work-title">{item.title}</div>{item.description && <div className="work-description">{item.description}</div>}</td>
+      <td><div className="work-title">{item.title}</div>{(item.description || item.assigneeName) && <div className="work-description">{item.assigneeName ? `Assigned to ${item.assigneeName}` : ''}{item.assigneeName && item.description ? ' · ' : ''}{item.description}</div>}</td>
       <td><span className={`priority-tag ${item.priority}`}><span />{item.priority}</span></td>
       <td><label className={`status-control ${item.status}`}><span className="sr-only">Status for {item.title}</span><select value={item.status} disabled={!canEdit} onChange={(event) => onStatusChange(item, event.target.value)}>{statuses.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select><span aria-hidden="true" className="select-chevron">⌄</span></label></td>
       <td><span className="date-cell">{date}</span></td>

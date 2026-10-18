@@ -52,19 +52,57 @@ test('health, authentication, work item lifecycle, optimistic concurrency, and l
   cookie = login.headers.getSetCookie()[0].split(';')[0];
   assert.equal((await login.json()).user.role, 'admin');
 
+  const userList = await fetch(`${baseUrl}/api/users`, { headers: { cookie } });
+  assert.equal((await userList.json()).users.length, 2);
+  const newMemberInput = { displayName: 'New Teammate', email: 'new.member@example.test', password: 'new-member-password-1234' };
+  const newMemberResponse = await fetch(`${baseUrl}/api/users`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(newMemberInput),
+  });
+  assert.equal(newMemberResponse.status, 201);
+  const newMember = (await newMemberResponse.json()).user;
+  assert.equal(newMember.role, 'member');
+  assert.equal(Object.hasOwn(newMember, 'password'), false);
+  const duplicateMember = await fetch(`${baseUrl}/api/users`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(newMemberInput),
+  });
+  assert.equal(duplicateMember.status, 409);
+
   const created = await fetch(`${baseUrl}/api/work-items`, {
-    method: 'POST', headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ title: 'Review nightly job', description: 'Confirm the scheduled import completed.', priority: 'high' }),
+    method: 'POST', headers: { 'content-type': 'application/json', cookie, 'idempotency-key': 'workflow-create-0001' },
+    body: JSON.stringify({ title: 'Review nightly job', description: 'Confirm the scheduled import completed.', priority: 'high', assigneeId: newMember.id }),
   });
   assert.equal(created.status, 201);
   const item = (await created.json()).item;
   assert.equal(item.status, 'open');
   assert.equal(item.version, 1);
+  assert.equal(item.assigneeName, 'New Teammate');
+
+  const replay = await fetch(`${baseUrl}/api/work-items`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie, 'idempotency-key': 'workflow-create-0001' },
+    body: JSON.stringify({ title: 'Review nightly job', description: 'Confirm the scheduled import completed.', priority: 'high', assigneeId: newMember.id }),
+  });
+  assert.equal(replay.status, 201);
+  assert.equal(replay.headers.get('idempotency-replayed'), 'true');
+  assert.equal((await replay.json()).item.id, item.id);
+
+  const idempotencyMismatch = await fetch(`${baseUrl}/api/work-items`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie, 'idempotency-key': 'workflow-create-0001' },
+    body: JSON.stringify({ title: 'Different request', description: '', priority: 'low' }),
+  });
+  assert.equal(idempotencyMismatch.status, 409);
 
   const memberLogin = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(memberCredentials),
   });
   const memberCookie = memberLogin.headers.getSetCookie()[0].split(';')[0];
+  const forbiddenUserList = await fetch(`${baseUrl}/api/users`, { headers: { cookie: memberCookie } });
+  assert.equal(forbiddenUserList.status, 403);
+  const forbiddenAssignment = await fetch(`${baseUrl}/api/work-items`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: memberCookie, 'idempotency-key': 'member-create-0001' },
+    body: JSON.stringify({ title: 'Assign another member', assigneeId: newMember.id }),
+  });
+  assert.equal(forbiddenAssignment.status, 403);
   const forbiddenUpdate = await fetch(`${baseUrl}/api/work-items/${item.id}`, {
     method: 'PATCH', headers: { 'content-type': 'application/json', cookie: memberCookie },
     body: JSON.stringify({ title: 'Unauthorized edit', version: 1 }),

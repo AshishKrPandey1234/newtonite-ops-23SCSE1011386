@@ -1,9 +1,9 @@
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { openDatabase } from './db.js';
-import { createSessionToken, digestToken, verifyPassword } from './security.js';
+import { createSessionToken, digestToken, hashPassword, verifyPassword } from './security.js';
 
 const SESSION_DAYS = 7;
 const COOKIE_NAME = 'ops_session';
@@ -48,6 +48,10 @@ function publicUser(user) {
   return { id: user.id, email: user.email, displayName: user.display_name, role: user.role };
 }
 
+function hashText(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 function getUserForSession(db, request) {
   const token = cookieValue(request);
   if (!token) return null;
@@ -70,10 +74,13 @@ function listWorkItems(db, url) {
     const term = `%${url.searchParams.get('search').slice(0, 100)}%`;
     values.push(term, term);
   }
-  return db.prepare(`SELECT id, title, description, status, priority, created_by AS createdBy,
-      assignee_id AS assigneeId, created_at AS createdAt, updated_at AS updatedAt, version
-    FROM work_items ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
-    ORDER BY updated_at DESC, id LIMIT 200`).all(...values);
+  return db.prepare(`SELECT work_items.id, work_items.title, work_items.description, work_items.status,
+      work_items.priority, work_items.created_by AS createdBy, work_items.assignee_id AS assigneeId,
+      assignees.display_name AS assigneeName, work_items.created_at AS createdAt,
+      work_items.updated_at AS updatedAt, work_items.version
+    FROM work_items LEFT JOIN users AS assignees ON assignees.id = work_items.assignee_id
+    ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+    ORDER BY work_items.updated_at DESC, work_items.id LIMIT 200`).all(...values);
 }
 
 function validateWorkItem(input, creating) {
@@ -148,24 +155,87 @@ export function createAppServer({ db = openDatabase(), secureCookies = process.e
       }
       if (url.pathname.startsWith('/api/')) {
         if (!user) { json(response, 401, { error: 'Authentication required.' }); return; }
+        if (url.pathname === '/api/users' && (request.method === 'GET' || request.method === 'POST')) {
+          if (user.role !== 'admin') { json(response, 403, { error: 'Only admins can manage team members.' }); return; }
+          if (request.method === 'GET') {
+            const users = db.prepare(`SELECT id, email, display_name AS displayName, role FROM users ORDER BY display_name, email`).all();
+            json(response, 200, { users });
+            return;
+          }
+          const input = await readJson(request);
+          const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
+          const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : '';
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { json(response, 400, { error: 'Enter a valid email address.' }); return; }
+          if (!displayName || displayName.length > 80) { json(response, 400, { error: 'Name must contain 1 to 80 characters.' }); return; }
+          if (typeof input.password !== 'string' || input.password.length < 12) { json(response, 400, { error: 'Password must be at least 12 characters.' }); return; }
+          if (db.prepare('SELECT id FROM users WHERE email = ?').get(email)) { json(response, 409, { error: 'A user with that email already exists.' }); return; }
+          const { salt, hash } = hashPassword(input.password);
+          const createdAt = new Date().toISOString();
+          const member = { id: randomUUID(), email, display_name: displayName, role: 'member' };
+          db.prepare(`INSERT INTO users (id, email, display_name, role, password_salt, password_hash, created_at)
+            VALUES (?, ?, ?, 'member', ?, ?, ?)`)
+            .run(member.id, member.email, member.display_name, salt, hash, createdAt);
+          json(response, 201, { user: publicUser(member) });
+          return;
+        }
         if (request.method === 'GET' && url.pathname === '/api/work-items') {
           json(response, 200, { items: listWorkItems(db, url) });
           return;
         }
         if (request.method === 'POST' && url.pathname === '/api/work-items') {
           const item = validateWorkItem(await readJson(request), true);
-          if (item.assignee_id && !db.prepare('SELECT id FROM users WHERE id = ?').get(item.assignee_id)) {
-            json(response, 400, { error: 'Assignee does not exist.' });
+          if (item.assignee_id && user.role !== 'admin') {
+            json(response, 403, { error: 'Only admins can assign a work item.' });
             return;
           }
-          const now = new Date().toISOString();
-          const id = randomUUID();
-          db.prepare(`INSERT INTO work_items (id, title, description, priority, created_by, assignee_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(id, item.title, item.description, item.priority, user.id, item.assignee_id ?? null, now, now);
-          json(response, 201, { item: db.prepare(`SELECT id, title, description, status, priority,
-            created_by AS createdBy, assignee_id AS assigneeId, created_at AS createdAt,
-            updated_at AS updatedAt, version FROM work_items WHERE id = ?`).get(id) });
+          const idempotencyKey = request.headers['idempotency-key'];
+          if (typeof idempotencyKey !== 'string' || !/^[A-Za-z0-9._~-]{8,128}$/.test(idempotencyKey)) {
+            json(response, 400, { error: 'Provide an Idempotency-Key header between 8 and 128 safe characters.' });
+            return;
+          }
+          const keyHash = hashText(idempotencyKey);
+          const requestHash = hashText(JSON.stringify(item));
+          db.exec('BEGIN IMMEDIATE');
+          try {
+            const expiry = new Date(Date.now() - 30 * 86400_000).toISOString();
+            const previous = db.prepare(`SELECT request_hash AS requestHash, response_status AS responseStatus,
+              response_json AS responseJson, created_at AS createdAt FROM idempotency_keys WHERE user_id = ? AND key_hash = ?`)
+              .get(user.id, keyHash);
+            if (previous && previous.createdAt >= expiry) {
+              db.exec('COMMIT');
+              if (previous.requestHash !== requestHash) {
+                json(response, 409, { error: 'This Idempotency-Key was already used with a different request.' });
+                return;
+              }
+              json(response, previous.responseStatus, JSON.parse(previous.responseJson), { 'idempotency-replayed': 'true' });
+              return;
+            }
+            if (previous) db.prepare('DELETE FROM idempotency_keys WHERE user_id = ? AND key_hash = ?').run(user.id, keyHash);
+            if (item.assignee_id && !db.prepare('SELECT id FROM users WHERE id = ?').get(item.assignee_id)) {
+              db.exec('ROLLBACK');
+              json(response, 400, { error: 'Assignee does not exist.' });
+              return;
+            }
+            const now = new Date().toISOString();
+            const id = randomUUID();
+            db.prepare(`INSERT INTO work_items (id, title, description, priority, created_by, assignee_id, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+              .run(id, item.title, item.description, item.priority, user.id, item.assignee_id ?? null, now, now);
+            const body = { item: db.prepare(`SELECT work_items.id, work_items.title, work_items.description,
+              work_items.status, work_items.priority, work_items.created_by AS createdBy,
+              work_items.assignee_id AS assigneeId, assignees.display_name AS assigneeName,
+              work_items.created_at AS createdAt, work_items.updated_at AS updatedAt, work_items.version FROM work_items
+              LEFT JOIN users AS assignees ON assignees.id = work_items.assignee_id WHERE work_items.id = ?`).get(id) };
+            db.prepare(`INSERT INTO idempotency_keys (user_id, key_hash, request_hash, response_status, response_json, created_at)
+              VALUES (?, ?, ?, 201, ?, ?)`)
+              .run(user.id, keyHash, requestHash, JSON.stringify(body), now);
+            db.prepare('DELETE FROM idempotency_keys WHERE created_at < ?').run(expiry);
+            db.exec('COMMIT');
+            json(response, 201, body);
+          } catch (error) {
+            db.exec('ROLLBACK');
+            throw error;
+          }
           return;
         }
         const match = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)$/i);
@@ -202,9 +272,11 @@ export function createAppServer({ db = openDatabase(), secureCookies = process.e
           const result = db.prepare(`UPDATE work_items SET ${assignments}, updated_at = ?, version = version + 1
             WHERE id = ? AND version = ?`).run(...values, now, current.id, current.version);
           if (!result.changes) { json(response, 409, { error: 'This work item changed. Reload it and try again.' }); return; }
-          const updated = db.prepare(`SELECT id, title, description, status, priority, created_by AS createdBy,
-            assignee_id AS assigneeId, created_at AS createdAt, updated_at AS updatedAt, version
-            FROM work_items WHERE id = ?`).get(current.id);
+          const updated = db.prepare(`SELECT work_items.id, work_items.title, work_items.description,
+            work_items.status, work_items.priority, work_items.created_by AS createdBy,
+            work_items.assignee_id AS assigneeId, assignees.display_name AS assigneeName,
+            work_items.created_at AS createdAt, work_items.updated_at AS updatedAt, work_items.version FROM work_items
+            LEFT JOIN users AS assignees ON assignees.id = work_items.assignee_id WHERE work_items.id = ?`).get(current.id);
           json(response, 200, { item: updated });
           return;
         }

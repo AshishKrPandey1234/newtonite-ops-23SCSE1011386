@@ -41,6 +41,16 @@ export function openDatabase(path = process.env.DATABASE_PATH ?? './data/opsflow
     );
     CREATE INDEX IF NOT EXISTS work_items_status_updated_idx ON work_items(status, updated_at DESC);
     CREATE INDEX IF NOT EXISTS work_items_assignee_idx ON work_items(assignee_id);
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      key_hash TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      response_status INTEGER NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, key_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idempotency_created_idx ON idempotency_keys(created_at);
   `);
 
   const email = process.env.SEED_ADMIN_EMAIL?.trim();
