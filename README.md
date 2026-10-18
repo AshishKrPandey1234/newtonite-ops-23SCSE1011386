@@ -8,13 +8,13 @@ Newtonite Ops is an operations workflow application for tracking work items thro
 - [x] SQLite users, sessions, and work item schema
 - [x] Login/logout and authenticated work item API
 - [x] Work item status transitions and version conflict checks
-- [ ] React operations dashboard
+- [x] React operations dashboard with sign-in, search/filter, create, and status updates
 - [x] Automated API workflow and concurrency test
 
 ## Technology and structure
 
 - Node.js 24 or newer, using native ES modules, `node:http`, and built-in `node:sqlite`
-- No third-party runtime dependencies
+- React 19 and Vite 7 for the browser interface
 - `node:sqlite` currently emits Node's experimental API warning
 
 ```text
@@ -25,6 +25,12 @@ Newtonite Ops is an operations workflow application for tracking work items thro
 │   └── security.js    # Password hashing and opaque session token helpers
 ├── test/
 │   └── work-items.test.js
+├── src/
+│   ├── App.jsx         # Login and operations dashboard
+│   ├── main.jsx        # React entry point
+│   └── styles.css      # Responsive dashboard styles
+├── index.html
+├── vite.config.js      # Local API proxy
 ├── .env.example       # Safe local configuration template
 ├── ENGINEERING_DECISIONS.md
 └── package.json
@@ -34,10 +40,11 @@ Newtonite Ops is an operations workflow application for tracking work items thro
 
 ```mermaid
 flowchart LR
-  Browser[React client, planned] -->|same-origin JSON requests| API[Node.js HTTP server]
+  Browser[React dashboard] -->|same-origin JSON requests| Vite[Vite dev server]
+  Vite -->|/api proxy| API[Node.js HTTP server]
   API --> Auth[Session and role checks]
   Auth --> DB[(SQLite database)]
-  API -->|JSON responses| Browser
+  API -->|JSON responses| Vite
 ```
 
 ## Prerequisites and Windows setup
@@ -45,12 +52,15 @@ flowchart LR
 Install Node.js 24 or newer. In PowerShell, from the repository root:
 
 ```powershell
+npm install
 Copy-Item .env.example .env
 $env:SEED_ADMIN_PASSWORD = Read-Host 'Set a unique local admin password'
 npm start
 ```
 
-The server reads `.env` automatically. The default seed email is `admin@newtonite.local`; the first start creates that local admin only when `SEED_ADMIN_PASSWORD` is set. Choose a unique local password of at least 12 characters, then sign in with the email and password you configured. The database is created at `data/opsflow.sqlite` by default. Never commit `.env` or real credentials.
+Keep that PowerShell window running for the API. Open a second PowerShell window in the repository and run `npm run dev` to start the React dashboard at `http://localhost:5173`.
+
+The API reads `.env` automatically. The default seed email is `admin@newtonite.local`; the first API start creates that local admin only when `SEED_ADMIN_PASSWORD` is set. Choose a unique local password of at least 12 characters, then sign in with the email and password you configured. The database is created at `data/opsflow.sqlite` by default. Never commit `.env` or real credentials.
 
 The server defaults to port 3000. To select another port in PowerShell:
 
@@ -59,7 +69,16 @@ $env:PORT = '3100'
 npm start
 ```
 
-No package installation is required. To run the integration test suite, use `npm test` from the repository root.
+### Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | Node API listen port |
+| `DATABASE_PATH` | `./data/opsflow.sqlite` | SQLite database file path; `:memory:` is useful for tests |
+| `SEED_ADMIN_EMAIL` | `admin@newtonite.local` | Email used when creating the first local admin |
+| `SEED_ADMIN_PASSWORD` | unset | Optional first-start admin password; must be at least 12 characters |
+
+For backend development, run `npm run dev:api` instead of `npm start` to restart the API when files change.
 
 ## API
 
@@ -144,9 +163,11 @@ npm test
 
 Verified for this milestone: `npm run check` passes and `npm test` passes (1 integration test covering health, login/logout, authorization, work item creation/filtering, valid and invalid transitions, and stale-version rejection). The test opens a temporary in-memory SQLite database and an ephemeral localhost HTTP server.
 
+`npm run build` also succeeds and creates the production frontend files under `dist/`. The current Node server serves API routes only; production deployment must serve `dist/` through a static host or reverse proxy and route `/api` to the Node API.
+
 ## Known limitations and next steps
 
-- There is no React interface, member provisioning flow, request logging, or pagination beyond a 200-item cap.
+- There is no member provisioning flow, request logging, or pagination beyond a 200-item cap.
 - The built-in SQLite API is experimental in Node 24; for larger deployments, use a supported database service and migration tooling.
 - Session cleanup is not scheduled; expired sessions are rejected when used but retained until logout or database maintenance.
-- Next: build the React dashboard and improve user provisioning and operational observability.
+- Next: add a member provisioning flow, session cleanup, and request logging before considering a shared production database.

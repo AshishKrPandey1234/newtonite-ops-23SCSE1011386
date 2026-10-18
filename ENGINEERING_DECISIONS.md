@@ -35,3 +35,10 @@ This log records decisions that are reflected in the current implementation.
 - **Alternatives considered:** Allow arbitrary state strings or permit every signed-in user to change every record.
 - **Reason:** A single transition map and role check make invalid workflow changes explicit and testable.
 - **Trade-off:** There is no UI or endpoint to provision members yet; the initial admin is created from local environment variables.
+
+## 2026-10-19 — Build the dashboard with React and Vite
+
+- **Decision:** Use React 19 for the dashboard and Vite 7 for local development and production builds. Proxy `/api` requests from the Vite development server to the Node API.
+- **Alternatives considered:** Build server-rendered HTML in the Node process or use a larger full-stack framework.
+- **Reason:** A separate browser interface keeps the API usable independently and gives the dashboard a fast local feedback loop. The same-origin dev proxy lets the HttpOnly session cookie work without exposing it to JavaScript.
+- **Trade-off:** Local development uses two processes, and a production host must serve the static `dist/` directory while forwarding `/api` to the Node service.

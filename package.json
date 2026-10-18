@@ -6,11 +6,21 @@
   "type": "module",
   "scripts": {
     "start": "node --env-file-if-exists=.env server/index.js",
-    "dev": "node --watch --env-file-if-exists=.env server/index.js",
+    "dev": "vite --host 127.0.0.1",
+    "dev:api": "node --watch --env-file-if-exists=.env server/index.js",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
     "check": "node --check server/index.js && node --check server/db.js && node --check server/security.js",
     "test": "node --test"
   },
   "engines": {
     "node": ">=24"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
   }
 }
