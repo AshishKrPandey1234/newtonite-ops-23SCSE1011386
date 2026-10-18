@@ -35,6 +35,7 @@ Newtonite Ops is an operations workflow application for tracking work items thro
 ├── vite.config.js      # Local API proxy
 ├── .env.example       # Safe local configuration template
 ├── ENGINEERING_DECISIONS.md
+├── INTERVIEW_REVISION_GUIDE.md
 └── package.json
 ```
 
@@ -177,7 +178,7 @@ npm run check
 npm test
 ```
 
-Verified for this milestone: `npm run check` passes, `npm test` passes (1 integration test covering health, login/logout, admin/member access, member creation, idempotent replay and mismatch, work item filtering, valid and invalid transitions, and stale-version rejection), and `npm run build` succeeds. The test uses a temporary in-memory SQLite database and an ephemeral localhost HTTP server.
+Verified: `npm ci`, `npm run check`, `npm test`, and `npm run build` all pass from a fresh clone of the pushed `main` branch. The integration suite has 1 HTTP integration test covering health, login/logout, admin/member access, member creation, idempotent replay and mismatch, work item filtering, valid and invalid transitions, and stale-version rejection. It uses an in-memory SQLite database and an ephemeral localhost HTTP server.
 
 `npm run build` also succeeds and creates the production frontend files under `dist/`. The current Node server serves API routes only; production deployment must serve `dist/` through a static host or reverse proxy and route `/api` to the Node API.
 
@@ -187,3 +188,7 @@ Verified for this milestone: `npm run check` passes, `npm test` passes (1 integr
 - The built-in SQLite API is experimental in Node 24; for larger deployments, use a supported database service and migration tooling.
 - Expired sessions remain until logout or manual database maintenance. Idempotency keys older than 30 days are pruned when later work items are created; neither cleanup has a scheduled maintenance task.
 - Next: add request logging, rate limiting, and operational monitoring before considering a shared production database.
+
+## Interview preparation
+
+See [INTERVIEW_REVISION_GUIDE.md](INTERVIEW_REVISION_GUIDE.md) for an implementation-based guide to the architecture, REST API, React, Node.js, SQL, authentication, authorization, transactions, concurrency, idempotency, testing, scalability, and current limitations.

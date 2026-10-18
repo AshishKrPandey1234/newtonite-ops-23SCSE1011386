@@ -31,7 +31,7 @@ after(async () => {
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 });
 
-test('health, authentication, work item lifecycle, optimistic concurrency, and logout', async () => {
+test('authenticated workflow, team management, idempotency, concurrency, and logout', async () => {
   const health = await fetch(`${baseUrl}/api/health`);
   assert.equal(health.status, 200);
   assert.deepEqual(await health.json(), { status: 'ok', service: 'newtonite-ops' });

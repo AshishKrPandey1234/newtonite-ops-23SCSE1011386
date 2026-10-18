@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const statuses = [
   { value: 'open', label: 'Open' },
@@ -40,6 +40,7 @@ function App() {
   const [assigneeId, setAssigneeId] = useState('');
   const [memberDraft, setMemberDraft] = useState({ displayName: '', email: '', password: '' });
   const [loadError, setLoadError] = useState('');
+  const createAttempt = useRef(null);
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -100,12 +101,17 @@ function App() {
     event.preventDefault();
     setBusy(true);
     setNotice('');
+    const requestBody = JSON.stringify({ title, description, priority, assigneeId: assigneeId || null });
+    if (!createAttempt.current || createAttempt.current.body !== requestBody) {
+      createAttempt.current = { body: requestBody, key: crypto.randomUUID() };
+    }
     try {
       await api('/api/work-items', {
         method: 'POST',
-        headers: { 'idempotency-key': crypto.randomUUID() },
-        body: JSON.stringify({ title, description, priority, assigneeId: assigneeId || null }),
+        headers: { 'idempotency-key': createAttempt.current.key },
+        body: requestBody,
       });
+      createAttempt.current = null;
       setTitle('');
       setDescription('');
       setPriority('medium');
